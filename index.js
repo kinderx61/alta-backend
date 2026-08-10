@@ -15,15 +15,16 @@ const pool = new Pool({
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// СПИСОК АДМИНИСТРАТОРОВ (2 админа)
+// Список админов: твой ID, второй админ и ID из ENV
 const ADMIN_IDS = [
-  process.env.ADMIN_CHAT_ID, // Твой ID из переменных окружения Render
-  '5186266444'               // Второй админ
+  '843132781',
+  '5186266444',
+  process.env.ADMIN_CHAT_ID
 ].filter(Boolean);
 
 const isAdmin = (chatId) => ADMIN_IDS.includes(chatId.toString());
 
-// 1. Инициализация БД
+// Инициализация БД с поддержкой нескольких фото
 const initDb = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -38,7 +39,7 @@ const initDb = async () => {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       price NUMERIC NOT NULL,
-      image_url TEXT,
+      image_urls TEXT[],
       category TEXT DEFAULT 'Все'
     );
 
@@ -59,7 +60,7 @@ const initDb = async () => {
 };
 initDb().catch(console.error);
 
-// API 1: Инициализация пользователя
+// API 1: Пользователь
 app.post('/api/user/init', async (req, res) => {
   const { telegramId, username, firstName } = req.body;
   try {
@@ -76,7 +77,7 @@ app.post('/api/user/init', async (req, res) => {
   }
 });
 
-// API 2: Получение товаров
+// API 2: Товары
 app.get('/api/products', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM products ORDER BY id DESC');
@@ -86,7 +87,7 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// API 3: Создание заказа
+// API 3: Заказ
 app.post('/api/orders', async (req, res) => {
   const { userId, telegramUsername, fullName, city, postalCode, address, phone, deliveryType, totalAmount, bonusesUsed, items } = req.body;
 
@@ -112,7 +113,6 @@ app.post('/api/orders', async (req, res) => {
       `📦 **Состав заказа:**\n${itemsText}\n\n` +
       `💰 **К оплате:** ${totalAmount} ₽ (Списано бонусов: ${bonusesUsed})`;
 
-    // Отправка уведомления ВСЕМ админам
     ADMIN_IDS.forEach(adminId => {
       bot.sendMessage(adminId, msg, {
         parse_mode: 'Markdown',
@@ -133,47 +133,46 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-// --- АДМИН-КОМАНДЫ В БОТЕ ---
+// --- АДМИН-КОМАНДЫ В TELEGRAM ---
 
-// 1. Добавление товара: /addproduct Название | Цена | СсылкаНаФото | Категория
+// Добавить товар: /addproduct Имя | Цена | Ссылка1, Ссылка2 | Категория
 bot.onText(/\/addproduct (.+)/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
 
   const parts = match[1].split('|').map(p => p.trim());
   if (parts.length < 2) {
-    return bot.sendMessage(msg.chat.id, '❌ Формат: `/addproduct Название | Цена | СсылкаНаФото | Категория`\n\nКатегории: Худи, Футболки, Штаны, Аксессуары', { parse_mode: 'Markdown' });
+    return bot.sendMessage(msg.chat.id, '❌ Формат: `/addproduct Название | Цена | Ссылка1, Ссылка2 | Категория`', { parse_mode: 'Markdown' });
   }
 
-  const [name, price, imageUrl, category] = parts;
+  const [name, price, imagesStr, category] = parts;
+  const imageUrls = imagesStr ? imagesStr.split(',').map(s => s.trim()) : [];
+
   try {
     const res = await pool.query(
-      'INSERT INTO products (name, price, image_url, category) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, Number(price), imageUrl || '', category || 'Все']
+      'INSERT INTO products (name, price, image_urls, category) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, Number(price), imageUrls, category || 'Все']
     );
-    bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}, Категория: ${res.rows[0].category}) добавлен!`);
+    bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}) добавлен! Фотографий: ${imageUrls.length}`);
   } catch (err) {
     bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
 });
 
-// 2. Список товаров: /listproducts
-bot.onText(/\/listproducts/, async (msg) => {
+// Обновить фото: /editphotos ID Ссылка1, Ссылка2, Ссылка3
+bot.onText(/\/editphotos (\d+) (.+)/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
+  const productId = match[1];
+  const imageUrls = match[2].split(',').map(s => s.trim());
+
   try {
-    const res = await pool.query('SELECT * FROM products ORDER BY id DESC');
-    if (res.rows.length === 0) return bot.sendMessage(msg.chat.id, 'Каталог пуст.');
-    
-    let text = '📦 **Список товаров в базе:**\n\n';
-    res.rows.forEach(p => {
-      text += `• **ID ${p.id}**: ${p.name} — ${p.price}₽ [${p.category || 'Все'}]\n`;
-    });
-    bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+    await pool.query('UPDATE products SET image_urls = $1 WHERE id = $2', [imageUrls, productId]);
+    bot.sendMessage(msg.chat.id, `✅ Фотографии товара ID ${productId} обновлены (${imageUrls.length} шт).`);
   } catch (err) {
     bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
 });
 
-// 3. Изменить цену: /editprice ID НоваяЦена
+// Изменить цену: /editprice ID Цена
 bot.onText(/\/editprice (\d+) (\d+)/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
   const [_, productId, newPrice] = match;
@@ -185,30 +184,49 @@ bot.onText(/\/editprice (\d+) (\d+)/, async (msg, match) => {
   }
 });
 
-// 4. Удаление товара: /deleteproduct ID
+// Удалить товар: /deleteproduct ID
 bot.onText(/\/deleteproduct (\d+)/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
   const productId = match[1];
   try {
     await pool.query('DELETE FROM products WHERE id = $1', [productId]);
-    bot.sendMessage(msg.chat.id, `🗑 Товар ID ${productId} удален из базы.`);
+    bot.sendMessage(msg.chat.id, `🗑 Товар ID ${productId} удален.`);
   } catch (err) {
     bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
 });
 
-// Команда помощи по админке: /admin
+// Список всех товаров: /listproducts
+bot.onText(/\/listproducts/, async (msg) => {
+  if (!isAdmin(msg.chat.id)) return;
+  try {
+    const res = await pool.query('SELECT * FROM products ORDER BY id DESC');
+    if (res.rows.length === 0) return bot.sendMessage(msg.chat.id, 'Каталог пуст.');
+    
+    let text = '📦 **Каталог товаров ALTA:**\n\n';
+    res.rows.forEach(p => {
+      const photosCount = p.image_urls ? p.image_urls.length : 0;
+      text += `• **ID ${p.id}**: ${p.name} — ${p.price}₽ [${p.category || 'Все'}] (${photosCount} фото)\n`;
+    });
+    bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+  } catch (err) {
+    bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+  }
+});
+
+// Справка: /admin
 bot.onText(/\/admin/, (msg) => {
   if (!isAdmin(msg.chat.id)) return;
-  const helpText = `⚙️ **Команды администратора ALTA:**\n\n` +
-    `1. Добавить товар:\n\`/addproduct Худи Черное | 4500 | https://... | Худи\`\n\n` +
-    `2. Изменить цену:\n\`/editprice ID 5000\`\n\n` +
-    `3. Посмотреть все товары:\n\`/listproducts\`\n\n` +
-    `4. Удалить товар:\n\`/deleteproduct ID\``;
+  const helpText = `⚙️ **Админ-меню ALTA:**\n\n` +
+    `1. Добавить товар с галереей фото:\n\`/addproduct Худи Черное | 4500 | https://img1.jpg, https://img2.jpg | Худи\`\n\n` +
+    `2. Изменить порядок/ссылки фото:\n\`/editphotos ID https://img1.jpg, https://img2.jpg\`\n\n` +
+    `3. Изменить цену:\n\`/editprice ID 5000\`\n\n` +
+    `4. Список товаров:\n\`/listproducts\`\n\n` +
+    `5. Удалить товар:\n\`/deleteproduct ID\``;
   bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
-// Обработка кнопок в боте
+// Подтверждение/Отклонение заказа
 bot.on('callback_query', async (query) => {
   const [action, orderId, userId, amount] = query.data.split('_');
 
@@ -225,9 +243,14 @@ bot.on('callback_query', async (query) => {
     );
 
     ADMIN_IDS.forEach(adminId => {
-      bot.sendMessage(adminId, `Заказ №${orderId} подтвержден! Начислено ${earnedBonuses} Б.`).catch(() => {});
+      bot.sendMessage(adminId, `✅ Заказ №${orderId} подтвержден! Начислено ${earnedBonuses} бонусов.`).catch(() => {});
     });
-    bot.sendMessage(userId, `🎉 Ваш заказ №${orderId} подтвержден! Начислено ${earnedBonuses} бонусов.`);
+    bot.sendMessage(userId, `🎉 Ваш заказ №${orderId} успешно подтвержден! Начислено ${earnedBonuses} бонусов.`);
+  } else if (action === 'reject') {
+    ADMIN_IDS.forEach(adminId => {
+      bot.sendMessage(adminId, `❌ Заказ №${orderId} отклонен.`).catch(() => {});
+    });
+    bot.sendMessage(userId, `❌ Ваш заказ №${orderId} был отклонен. Свяжитесь с поддержкой.`);
   }
 
   bot.answerCallbackQuery(query.id);
