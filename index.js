@@ -17,14 +17,12 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 const WEB_APP_URL = 'https://alta-frontend-six.vercel.app';
 
-// 💳 ТВОИ АКТУАЛЬНЫЕ РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ
 const PAYMENT_REQUISITES = `💳 **Реквизиты для оплаты:**\n\n` +
   `• **Номер телефона (СБП):** \`+79895292935\`\n` +
   `• **Банк:** ВТБ\n` +
   `• **Получатель:** Кутилин А.А.\n\n` +
   `⚠️ *После перевода прикрепите скриншот чека прямо в этот чат для проверки!*`;
 
-// Список администраторов
 const ADMIN_IDS = [
   '843132781',
   '5186266444',
@@ -88,10 +86,7 @@ const setupCommands = async () => {
       { command: 'start', description: '🚀 Запустить бот' },
       { command: 'admin', description: '⚙️ Инструкция и справка' },
       { command: 'addproduct', description: '➕ Добавить товар в каталог' },
-      { command: 'listproducts', description: '📦 Посмотреть список всех товаров' },
-      { command: 'editprice', description: '✏️ Изменить цену товара' },
-      { command: 'editphotos', description: '🖼 Обновить фото товара' },
-      { command: 'deleteproduct', description: '🗑 Удалить товар по ID' }
+      { command: 'listproducts', description: '📦 Управление товарами и удаление' }
     ];
 
     for (const adminId of ADMIN_IDS) {
@@ -103,7 +98,7 @@ const setupCommands = async () => {
 };
 setupCommands();
 
-// Прием скриншота / чека от пользователя
+// Прием чека
 bot.on('photo', async (msg) => {
   await handleReceiptUpload(msg, msg.photo[msg.photo.length - 1].file_id, 'photo');
 });
@@ -128,7 +123,6 @@ async function handleReceiptUpload(msg, fileId, type) {
     }
 
     const order = orderRes.rows[0];
-
     await pool.query(`UPDATE orders SET status = 'on_review' WHERE id = $1`, [order.id]);
 
     bot.sendMessage(userId, `✅ **Чек по заказу №${order.id} получен!**\nАдминистраторы уже проверяют оплату. Ожидайте подтверждения.`, { parse_mode: 'Markdown' });
@@ -165,7 +159,7 @@ async function handleReceiptUpload(msg, fileId, type) {
   }
 }
 
-// Команды
+// КОМАНДЫ
 bot.onText(/\/start/, (msg) => {
   const text = `Привет, ${msg.from.first_name || 'друг'}! 👋\n\nДобро пожаловать в **ALTA® CONCEPT STORE**.\n\nНажми на кнопку ниже, чтобы открыть каталог одежды:`;
   
@@ -185,16 +179,13 @@ bot.onText(/\/admin/, (msg) => {
   if (!isAdmin(msg.chat.id)) return;
   const helpText = `⚙️ **Админ-меню ALTA:**\n\n` +
     `1. Добавить товар:\n\`/addproduct Худи Черное | 4500 | https://img1.jpg | Худи\`\n\n` +
-    `2. Изменить фото:\n\`/editphotos ID https://img1.jpg\`\n\n` +
-    `3. Изменить цену:\n\`/editprice ID 5000\`\n\n` +
-    `4. Список товаров:\n\`/listproducts\`\n\n` +
-    `5. Удалить товар:\n\`/deleteproduct ID\``;
+    `2. Управление и удаление товаров:\n\`/listproducts\``;
   bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/addproduct(?:\s+(.+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
-  const arg = match[1];
+  const arg = match ? match[1] : null;
   if (!arg) return bot.sendMessage(msg.chat.id, `Формат: \`/addproduct Название | Цена | Ссылки | Категория\``, { parse_mode: 'Markdown' });
 
   const parts = arg.split('|').map(p => p.trim());
@@ -206,114 +197,87 @@ bot.onText(/\/addproduct(?:\s+(.+))?/, async (msg, match) => {
       'INSERT INTO products (name, price, image_url, image_urls, category) VALUES ($1, $2, $3, $4, $5) RETURNING *',
       [name, Number(price), imageUrls[0] || '', imageUrls, category || 'Все']
     );
-    bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}) добавлен!`);
+    bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}) успешно добавлен!`);
   } catch (err) {
     bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
 });
 
+// СПИСОК С КНОПКАМИ УДАЛЕНИЯ
 bot.onText(/\/listproducts/, async (msg) => {
   if (!isAdmin(msg.chat.id)) return;
   try {
     const res = await pool.query('SELECT * FROM products ORDER BY id DESC');
     if (res.rows.length === 0) return bot.sendMessage(msg.chat.id, 'Каталог пуст.');
     
-    let text = '📦 **Каталог товаров ALTA:**\n\n';
-    res.rows.forEach(p => {
-      text += `• **ID ${p.id}**: ${p.name} — ${p.price} ₽ [${p.category || 'Все'}]\n`;
-    });
-    bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+    bot.sendMessage(msg.chat.id, `📦 **Список товаров в БД (${res.rows.length} шт.):**`);
+
+    for (const p of res.rows) {
+      const pText = `• **ID ${p.id}**: ${p.name}\n💰 **Цена:** ${p.price} ₽ | **Категория:** ${p.category || 'Все'}`;
+      await bot.sendMessage(msg.chat.id, pText, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `🗑 Удалить товар №${p.id}`, callback_data: `delprod_${p.id}` }]
+          ]
+        }
+      });
+    }
   } catch (err) {
     bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
   }
 });
 
-// API Endpoints
-app.post('/api/user/init', async (req, res) => {
-  const { telegramId, username, firstName } = req.body;
-  try {
-    let result = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
-    if (result.rows.length === 0) {
-      result = await pool.query(
-        'INSERT INTO users (telegram_id, username, first_name) VALUES ($1, $2, $3) RETURNING *',
-        [telegramId, username, firstName]
-      );
-    }
-    res.json(result.rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/products', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM products ORDER BY id DESC');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Оформление заказа
-app.post('/api/orders', async (req, res) => {
-  const { userId, telegramUsername, fullName, city, postalCode, address, phone, deliveryType, totalAmount, bonusesUsed, items } = req.body;
-
-  try {
-    const orderRes = await pool.query(
-      `INSERT INTO orders (user_id, full_name, city, postal_code, address, phone, delivery_type, total_amount, bonuses_used, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'waiting_payment') RETURNING id`,
-      [userId, fullName, city, postalCode, address, phone, deliveryType, totalAmount, bonusesUsed]
-    );
-
-    const orderId = orderRes.rows[0].id;
-
-    if (bonusesUsed > 0) {
-      await pool.query('UPDATE users SET bonuses = bonuses - $1 WHERE telegram_id = $2', [bonusesUsed, userId]);
-    }
-
-    const userMsg = `🎉 **Заказ №${orderId} успешно оформлен!**\n\n` +
-      `💰 **К оплате:** ${totalAmount} ₽\n\n` +
-      `${PAYMENT_REQUISITES}`;
-
-    bot.sendMessage(userId, userMsg, { parse_mode: 'Markdown' }).catch(() => {});
-
-    res.json({ success: true, orderId, paymentRequisites: PAYMENT_REQUISITES });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Кнопки модерации
+// РАБОТА С КНОПКАМИ
 bot.on('callback_query', async (query) => {
-  const [action, orderId, userId, amount] = query.data.split('_');
+  const data = query.data;
 
-  if (action === 'approve') {
-    await pool.query(`UPDATE orders SET status = 'paid' WHERE id = $1`, [orderId]);
+  // Удаление товара по кнопке
+  if (data.startsWith('delprod_')) {
+    const productId = data.split('_')[1];
+    try {
+      await pool.query('DELETE FROM products WHERE id = $1', [productId]);
+      bot.editMessageText(`🗑 **Товар ID ${productId} успешно удален из базы!**`, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown'
+      });
+    } catch (err) {
+      bot.sendMessage(query.message.chat.id, `Ошибка удаления: ${err.message}`);
+    }
+  } 
+  // Подтверждение / отклонение оплаты
+  else if (data.startsWith('approve_') || data.startsWith('reject_')) {
+    const [action, orderId, userId, amount] = data.split('_');
 
-    const userRes = await pool.query('SELECT is_first_order FROM users WHERE telegram_id = $1', [userId]);
-    const isFirst = userRes.rows[0]?.is_first_order ?? true;
+    if (action === 'approve') {
+      await pool.query(`UPDATE orders SET status = 'paid' WHERE id = $1`, [orderId]);
 
-    const bonusPercent = isFirst ? 0.15 : 0.05;
-    const earnedBonuses = Math.round(Number(amount) * bonusPercent);
+      const userRes = await pool.query('SELECT is_first_order FROM users WHERE telegram_id = $1', [userId]);
+      const isFirst = userRes.rows[0]?.is_first_order ?? true;
 
-    await pool.query(
-      'UPDATE users SET bonuses = bonuses + $1, is_first_order = FALSE WHERE telegram_id = $2',
-      [earnedBonuses, userId]
-    );
+      const bonusPercent = isFirst ? 0.15 : 0.05;
+      const earnedBonuses = Math.round(Number(amount) * bonusPercent);
 
-    ADMIN_IDS.forEach(adminId => {
-      bot.sendMessage(adminId, `✅ **Заказ №${orderId} подтвержден!** Пользователю начислено ${earnedBonuses} Б.`, { parse_mode: 'Markdown' }).catch(() => {});
-    });
+      await pool.query(
+        'UPDATE users SET bonuses = bonuses + $1, is_first_order = FALSE WHERE telegram_id = $2',
+        [earnedBonuses, userId]
+      );
 
-    bot.sendMessage(userId, `🎉 **Ваша оплата по заказу №${orderId} подтверждена!**\nВам начислено ${earnedBonuses} бонусов. Готовим заказ к отправке!`, { parse_mode: 'Markdown' });
-  } else if (action === 'reject') {
-    await pool.query(`UPDATE orders SET status = 'rejected' WHERE id = $1`, [orderId]);
+      ADMIN_IDS.forEach(adminId => {
+        bot.sendMessage(adminId, `✅ **Заказ №${orderId} подтвержден!** Пользователю начислено ${earnedBonuses} Б.`, { parse_mode: 'Markdown' }).catch(() => {});
+      });
 
-    ADMIN_IDS.forEach(adminId => {
-      bot.sendMessage(adminId, `❌ Заказ №${orderId} отклонен.`).catch(() => {});
-    });
+      bot.sendMessage(userId, `🎉 **Ваша оплата по заказу №${orderId} подтверждена!**\nВам начислено ${earnedBonuses} бонусов. Готовим заказ к отправке!`, { parse_mode: 'Markdown' });
+    } else if (action === 'reject') {
+      await pool.query(`UPDATE orders SET status = 'rejected' WHERE id = $1`, [orderId]);
 
-    bot.sendMessage(userId, `❌ Ваш чек по заказу №${orderId} не прошел проверку. Свяжитесь с поддержкой @AltaClotheswrk.`);
+      ADMIN_IDS.forEach(adminId => {
+        bot.sendMessage(adminId, `❌ Заказ №${orderId} отклонен.`).catch(() => {});
+      });
+
+      bot.sendMessage(userId, `❌ Ваш чек по заказу №${orderId} не прошел проверку. Свяжитесь с поддержкой @AltaClotheswrk.`);
+    }
   }
 
   bot.answerCallbackQuery(query.id);
