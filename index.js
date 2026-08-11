@@ -15,7 +15,9 @@ const pool = new Pool({
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// 1. СПИСОК АДМИНИСТРАТОРОВ
+const WEB_APP_URL = 'https://alta-frontend-six.vercel.app';
+
+// Список администраторов
 const ADMIN_IDS = [
   '843132781',
   '5186266444',
@@ -24,15 +26,13 @@ const ADMIN_IDS = [
 
 const isAdmin = (chatId) => ADMIN_IDS.includes(chatId.toString());
 
-// 2. НАСТРОЙКА ПРИВАТНОСТИ МЕНЮ КОМАНД
+// Настройка меню
 const setupCommands = async () => {
   try {
-    // Для всех обычных покупателей — только /start
     await bot.setMyCommands([
-      { command: 'start', description: '🛒 Открыть магазин ALTA' }
+      { command: 'start', description: '🛒 Открыть каталог ALTA' }
     ], { scope: { type: 'default' } });
 
-    // Персонально для каждого админа — полное меню управления
     const adminCommands = [
       { command: 'start', description: '🚀 Запустить бот' },
       { command: 'admin', description: '⚙️ Инструкция и справка' },
@@ -46,15 +46,13 @@ const setupCommands = async () => {
     for (const adminId of ADMIN_IDS) {
       await bot.setMyCommands(adminCommands, { scope: { type: 'chat', chat_id: adminId } }).catch(() => {});
     }
-
-    console.log('Меню команд разграничено: админам — всё, клиентам — только /start');
   } catch (err) {
     console.error('Ошибка настройки команд:', err);
   }
 };
 setupCommands();
 
-// 3. ИНИЦИАЛИЗАЦИЯ И МИГРАЦИЯ БД
+// БД
 const initDb = async () => {
   try {
     await pool.query(`
@@ -98,11 +96,23 @@ const initDb = async () => {
 };
 initDb();
 
-// --- ОБРАБОТЧИКИ КОМАНД ---
-
+// При /start отправляем красивую большую кнопку во всю ширину чата
 bot.onText(/\/start/, (msg) => {
-  const text = `Привет, ${msg.from.first_name || 'друг'}! 👋\n\nДобро пожаловать в **ALTA® CONCEPT STORE**.\n\nНажми кнопку **🛒 ALTA Store** внизу экрана, чтобы открыть каталог!`;
-  bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
+  const text = `Привет, ${msg.from.first_name || 'друг'}! 👋\n\nДобро пожаловать в **ALTA® CONCEPT STORE**.\n\nНажми на кнопку ниже, чтобы открыть каталог одежды:`;
+  
+  bot.sendMessage(msg.chat.id, text, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          {
+            text: '🛒 ОТКРЫТЬ МАГАЗИН ALTA',
+            web_app: { url: WEB_APP_URL }
+          }
+        ]
+      ]
+    }
+  });
 });
 
 bot.onText(/\/admin/, (msg) => {
@@ -116,7 +126,6 @@ bot.onText(/\/admin/, (msg) => {
   bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
-// Добавление товара
 bot.onText(/\/addproduct(?:\s+(.+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
 
@@ -150,7 +159,6 @@ bot.onText(/\/addproduct(?:\s+(.+))?/, async (msg, match) => {
   }
 });
 
-// Список товаров
 bot.onText(/\/listproducts/, async (msg) => {
   if (!isAdmin(msg.chat.id)) return;
   try {
@@ -167,7 +175,6 @@ bot.onText(/\/listproducts/, async (msg) => {
   }
 });
 
-// Редактирование цены
 bot.onText(/\/editprice(?:\s+(\d+)\s+(\d+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
 
@@ -189,7 +196,6 @@ bot.onText(/\/editprice(?:\s+(\d+)\s+(\d+))?/, async (msg, match) => {
   }
 });
 
-// Редактирование фото
 bot.onText(/\/editphotos(?:\s+(\d+)\s+(.+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
 
@@ -214,7 +220,6 @@ bot.onText(/\/editphotos(?:\s+(\d+)\s+(.+))?/, async (msg, match) => {
   }
 });
 
-// Удаление товара
 bot.onText(/\/deleteproduct(?:\s+(\d+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
 
@@ -234,8 +239,7 @@ bot.onText(/\/deleteproduct(?:\s+(\d+))?/, async (msg, match) => {
   }
 });
 
-// --- API ENDPOINTS ДЛЯ ПРИЛОЖЕНИЯ ---
-
+// API
 app.post('/api/user/init', async (req, res) => {
   const { telegramId, username, firstName } = req.body;
   try {
