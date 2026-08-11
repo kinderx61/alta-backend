@@ -17,12 +17,14 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 const WEB_APP_URL = 'https://alta-frontend-six.vercel.app';
 
+// РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ
 const PAYMENT_REQUISITES = `💳 **Реквизиты для оплаты:**\n\n` +
   `• **Номер телефона (СБП):** \`+79895292935\`\n` +
   `• **Банк:** ВТБ\n` +
   `• **Получатель:** Кутилин А.А.\n\n` +
   `⚠️ *После перевода прикрепите скриншот чека прямо в этот чат для проверки!*`;
 
+// Список администраторов
 const ADMIN_IDS = [
   '843132781',
   '5186266444',
@@ -31,7 +33,7 @@ const ADMIN_IDS = [
 
 const isAdmin = (chatId) => ADMIN_IDS.includes(chatId.toString());
 
-// Инициализация БД
+// Безопасная инициализация БД (сохраняет существующие данные)
 const initDb = async () => {
   try {
     await pool.query(`
@@ -69,13 +71,14 @@ const initDb = async () => {
 
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_urls TEXT[];`);
     await pool.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Все';`);
+    console.log('✅ База данных успешно инициализирована');
   } catch (err) {
-    console.error('Ошибка БД:', err);
+    console.error('❌ Ошибка БД:', err);
   }
 };
 initDb();
 
-// Настройка меню
+// Настройка меню команд
 const setupCommands = async () => {
   try {
     await bot.setMyCommands([
@@ -98,7 +101,7 @@ const setupCommands = async () => {
 };
 setupCommands();
 
-// Прием чека
+// Прием чеков от покупателей
 bot.on('photo', async (msg) => {
   await handleReceiptUpload(msg, msg.photo[msg.photo.length - 1].file_id, 'photo');
 });
@@ -159,7 +162,7 @@ async function handleReceiptUpload(msg, fileId, type) {
   }
 }
 
-// КОМАНДЫ
+// КОМАНДЫ БОТА
 bot.onText(/\/start/, (msg) => {
   const text = `Привет, ${msg.from.first_name || 'друг'}! 👋\n\nДобро пожаловать в **ALTA® CONCEPT STORE**.\n\nНажми на кнопку ниже, чтобы открыть каталог одежды:`;
   
@@ -178,8 +181,8 @@ bot.onText(/\/start/, (msg) => {
 bot.onText(/\/admin/, (msg) => {
   if (!isAdmin(msg.chat.id)) return;
   const helpText = `⚙️ **Админ-меню ALTA:**\n\n` +
-    `1. Добавить товар:\n\`/addproduct Худи Черное | 4500 | https://img1.jpg | Худи\`\n\n` +
-    `2. Управление и удаление товаров:\n\`/listproducts\``;
+    `1. Добавить товар:\n\`/addproduct Название | Цена | Ссылки | Категория\`\n\n` +
+    `2. Список товаров и удаление:\n\`/listproducts\``;
   bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
@@ -191,11 +194,12 @@ bot.onText(/\/addproduct(?:\s+(.+))?/, async (msg, match) => {
   const parts = arg.split('|').map(p => p.trim());
   const [name, price, imagesStr, category] = parts;
   const imageUrls = imagesStr ? imagesStr.split(',').map(s => s.trim()) : [];
+  const mainImage = imageUrls[0] || '';
 
   try {
     const res = await pool.query(
       'INSERT INTO products (name, price, image_url, image_urls, category) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [name, Number(price), imageUrls[0] || '', imageUrls, category || 'Все']
+      [name, Number(price), mainImage, imageUrls, category || 'Все']
     );
     bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}) успешно добавлен!`);
   } catch (err) {
@@ -228,11 +232,10 @@ bot.onText(/\/listproducts/, async (msg) => {
   }
 });
 
-// РАБОТА С КНОПКАМИ
+// КНОПКИ УДАЛЕНИЯ И МОДЕРАЦИИ
 bot.on('callback_query', async (query) => {
   const data = query.data;
 
-  // Удаление товара по кнопке
   if (data.startsWith('delprod_')) {
     const productId = data.split('_')[1];
     try {
@@ -245,9 +248,7 @@ bot.on('callback_query', async (query) => {
     } catch (err) {
       bot.sendMessage(query.message.chat.id, `Ошибка удаления: ${err.message}`);
     }
-  } 
-  // Подтверждение / отклонение оплаты
-  else if (data.startsWith('approve_') || data.startsWith('reject_')) {
+  } else if (data.startsWith('approve_') || data.startsWith('reject_')) {
     const [action, orderId, userId, amount] = data.split('_');
 
     if (action === 'approve') {
@@ -281,6 +282,60 @@ bot.on('callback_query', async (query) => {
   }
 
   bot.answerCallbackQuery(query.id);
+});
+
+// API ЭНДПОИНТЫ ДЛЯ ПРИЛОЖЕНИЯ
+app.post('/api/user/init', async (req, res) => {
+  const { telegramId, username, firstName } = req.body;
+  try {
+    let result = await pool.query('SELECT * FROM users WHERE telegram_id = $1', [telegramId]);
+    if (result.rows.length === 0) {
+      result = await pool.query(
+        'INSERT INTO users (telegram_id, username, first_name) VALUES ($1, $2, $3) RETURNING *',
+        [telegramId, username, firstName]
+      );
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/products', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM products ORDER BY id DESC');
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/orders', async (req, res) => {
+  const { userId, telegramUsername, fullName, city, postalCode, address, phone, deliveryType, totalAmount, bonusesUsed, items } = req.body;
+
+  try {
+    const orderRes = await pool.query(
+      `INSERT INTO orders (user_id, full_name, city, postal_code, address, phone, delivery_type, total_amount, bonuses_used, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'waiting_payment') RETURNING id`,
+      [userId, fullName, city, postalCode, address, phone, deliveryType, totalAmount, bonusesUsed]
+    );
+
+    const orderId = orderRes.rows[0].id;
+
+    if (bonusesUsed > 0) {
+      await pool.query('UPDATE users SET bonuses = bonuses - $1 WHERE telegram_id = $2', [bonusesUsed, userId]);
+    }
+
+    const userMsg = `🎉 **Заказ №${orderId} успешно оформлен!**\n\n` +
+      `💰 **К оплате:** ${totalAmount} ₽\n\n` +
+      `${PAYMENT_REQUISITES}`;
+
+    bot.sendMessage(userId, userMsg, { parse_mode: 'Markdown' }).catch(() => {});
+
+    res.json({ success: true, orderId, paymentRequisites: PAYMENT_REQUISITES });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 10000;
