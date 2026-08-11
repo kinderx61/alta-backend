@@ -15,7 +15,7 @@ const pool = new Pool({
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// Список ID всех администраторов
+// 1. СПИСОК АДМИНИСТРАТОРОВ
 const ADMIN_IDS = [
   '843132781',
   '5186266444',
@@ -24,19 +24,37 @@ const ADMIN_IDS = [
 
 const isAdmin = (chatId) => ADMIN_IDS.includes(chatId.toString());
 
-// УСТАНОВКА МЕНЮ КОМАНД В ТЕЛЕГРАМ
-bot.setMyCommands([
-  { command: 'start', description: '🚀 Запустить магазина' },
-  { command: 'admin', description: '⚙️ Инструкция администратора' },
-  { command: 'addproduct', description: '➕ Добавить товар (Имя | Цена | Фото | Кат)' },
-  { command: 'listproducts', description: '📦 Посмотреть список всех товаров' },
-  { command: 'editprice', description: '✏️ Изменить цену (ID Цена)' },
-  { command: 'editphotos', description: '🖼 Обновить фото товара (ID Ссылки)' },
-  { command: 'deleteproduct', description: '🗑 Удалить товар по ID' }
-]).then(() => console.log('Меню команд успешно загружено в Telegram!'))
-  .catch(err => console.error('Ошибка установки команд:', err));
+// 2. НАСТРОЙКА ПРИВАТНОСТИ МЕНЮ КОМАНД
+const setupCommands = async () => {
+  try {
+    // Для всех обычных покупателей — только /start
+    await bot.setMyCommands([
+      { command: 'start', description: '🛒 Открыть магазин ALTA' }
+    ], { scope: { type: 'default' } });
 
-// Инициализация БД
+    // Персонально для каждого админа — полное меню управления
+    const adminCommands = [
+      { command: 'start', description: '🚀 Запустить бот' },
+      { command: 'admin', description: '⚙️ Инструкция и справка' },
+      { command: 'addproduct', description: '➕ Добавить товар в каталог' },
+      { command: 'listproducts', description: '📦 Посмотреть список всех товаров' },
+      { command: 'editprice', description: '✏️ Изменить цену товара' },
+      { command: 'editphotos', description: '🖼 Обновить фото товара' },
+      { command: 'deleteproduct', description: '🗑 Удалить товар по ID' }
+    ];
+
+    for (const adminId of ADMIN_IDS) {
+      await bot.setMyCommands(adminCommands, { scope: { type: 'chat', chat_id: adminId } }).catch(() => {});
+    }
+
+    console.log('Меню команд разграничено: админам — всё, клиентам — только /start');
+  } catch (err) {
+    console.error('Ошибка настройки команд:', err);
+  }
+};
+setupCommands();
+
+// 3. ИНИЦИАЛИЗАЦИЯ И МИГРАЦИЯ БД
 const initDb = async () => {
   try {
     await pool.query(`
@@ -80,31 +98,41 @@ const initDb = async () => {
 };
 initDb();
 
-// Команда /start
+// --- ОБРАБОТЧИКИ КОМАНД ---
+
 bot.onText(/\/start/, (msg) => {
-  const text = `Привет, ${msg.from.first_name || 'друг'}! 👋\n\nДобро пожаловать в **ALTA® CONCEPT STORE**.\nНажми кнопку **ALTA Store** снизу слева, чтобы открыть магазин!`;
+  const text = `Привет, ${msg.from.first_name || 'друг'}! 👋\n\nДобро пожаловать в **ALTA® CONCEPT STORE**.\n\nНажми кнопку **🛒 ALTA Store** внизу экрана, чтобы открыть каталог!`;
   bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
 });
 
-// Команда /admin
 bot.onText(/\/admin/, (msg) => {
   if (!isAdmin(msg.chat.id)) return;
   const helpText = `⚙️ **Админ-меню ALTA:**\n\n` +
     `1. Добавить товар:\n\`/addproduct Худи Черное | 4500 | https://img1.jpg, https://img2.jpg | Худи\`\n\n` +
     `2. Изменить фото:\n\`/editphotos ID https://img1.jpg, https://img2.jpg\`\n\n` +
     `3. Изменить цену:\n\`/editprice ID 5000\`\n\n` +
-    `4. Список товаров:\n\`/listproducts\`\n\n` +
+    `4. Список всех товаров:\n\`/listproducts\`\n\n` +
     `5. Удалить товар:\n\`/deleteproduct ID\``;
   bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'Markdown' });
 });
 
-// Добавить товар: /addproduct Имя | Цена | Ссылка1, Ссылка2 | Категория
-bot.onText(/\/addproduct (.+)/, async (msg, match) => {
+// Добавление товара
+bot.onText(/\/addproduct(?:\s+(.+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
 
-  const parts = match[1].split('|').map(p => p.trim());
+  const arg = match[1];
+  if (!arg) {
+    return bot.sendMessage(msg.chat.id, 
+      `➕ **Как добавить товар:**\n\nСкопируйте и заполните команду ниже:\n\n` +
+      `\`/addproduct Название | Цена | Ссылка1, Ссылка2 | Категория\`\n\n` +
+      `*Пример:*\n\`/addproduct Зип-худи ALTA | 5500 | https://i.ibb.co/photo1.jpg | Худи\``, 
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const parts = arg.split('|').map(p => p.trim());
   if (parts.length < 2) {
-    return bot.sendMessage(msg.chat.id, '❌ Формат: `/addproduct Название | Цена | Ссылка1, Ссылка2 | Категория`', { parse_mode: 'Markdown' });
+    return bot.sendMessage(msg.chat.id, '❌ Неверный формат. Используйте разделитель `|` между полями.', { parse_mode: 'Markdown' });
   }
 
   const [name, price, imagesStr, category] = parts;
@@ -116,69 +144,98 @@ bot.onText(/\/addproduct (.+)/, async (msg, match) => {
       'INSERT INTO products (name, price, image_url, image_urls, category) VALUES ($1, $2, $3, $4, $5) RETURNING *',
       [name, Number(price), mainImage, imageUrls, category || 'Все']
     );
-    bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}) добавлен!`);
+    bot.sendMessage(msg.chat.id, `✅ Товар "${res.rows[0].name}" (ID: ${res.rows[0].id}) успешно добавлен в каталог!`);
   } catch (err) {
-    bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+    bot.sendMessage(msg.chat.id, `❌ Ошибка БД: ${err.message}`);
   }
 });
 
-// Список товаров: /listproducts
+// Список товаров
 bot.onText(/\/listproducts/, async (msg) => {
   if (!isAdmin(msg.chat.id)) return;
   try {
     const res = await pool.query('SELECT * FROM products ORDER BY id DESC');
-    if (res.rows.length === 0) return bot.sendMessage(msg.chat.id, 'Каталог пуст.');
+    if (res.rows.length === 0) return bot.sendMessage(msg.chat.id, 'Каталог пока пуст.');
     
-    let text = '📦 **Каталог товаров ALTA:**\n\n';
+    let text = '📦 **Список товаров в базе ALTA:**\n\n';
     res.rows.forEach(p => {
-      text += `• **ID ${p.id}**: ${p.name} — ${p.price}₽ [${p.category || 'Все'}]\n`;
+      text += `• **ID ${p.id}**: ${p.name} — ${p.price} ₽ [${p.category || 'Все'}]\n`;
     });
     bot.sendMessage(msg.chat.id, text, { parse_mode: 'Markdown' });
   } catch (err) {
-    bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+    bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
   }
 });
 
-// Изменить фото: /editphotos ID Ссылки
-bot.onText(/\/editphotos (\d+) (.+)/, async (msg, match) => {
+// Редактирование цены
+bot.onText(/\/editprice(?:\s+(\d+)\s+(\d+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
+
   const productId = match[1];
-  const imageUrls = match[2].split(',').map(s => s.trim());
+  const newPrice = match[2];
+
+  if (!productId || !newPrice) {
+    return bot.sendMessage(msg.chat.id, 
+      `✏️ **Изменение цены:**\n\nОтправьте команду в формате:\n\`/editprice ID_Товара НоваяЦена\`\n\n*Пример:*\n\`/editprice 1 4900\``, 
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  try {
+    await pool.query('UPDATE products SET price = $1 WHERE id = $2', [Number(newPrice), productId]);
+    bot.sendMessage(msg.chat.id, `✅ Цена товара ID ${productId} обновлена на ${newPrice} ₽.`);
+  } catch (err) {
+    bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
+  }
+});
+
+// Редактирование фото
+bot.onText(/\/editphotos(?:\s+(\d+)\s+(.+))?/, async (msg, match) => {
+  if (!isAdmin(msg.chat.id)) return;
+
+  const productId = match[1];
+  const photosStr = match[2];
+
+  if (!productId || !photosStr) {
+    return bot.sendMessage(msg.chat.id, 
+      `🖼 **Обновление фото:**\n\nОтправьте команду в формате:\n\`/editphotos ID_Товара Ссылка1, Ссылка2\`\n\n*Пример:*\n\`/editphotos 1 https://img1.jpg, https://img2.jpg\``, 
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const imageUrls = photosStr.split(',').map(s => s.trim());
   const mainImage = imageUrls[0] || '';
 
   try {
     await pool.query('UPDATE products SET image_url = $1, image_urls = $2 WHERE id = $3', [mainImage, imageUrls, productId]);
-    bot.sendMessage(msg.chat.id, `✅ Фотографии товара ID ${productId} обновлены.`);
+    bot.sendMessage(msg.chat.id, `✅ Фотографии товара ID ${productId} обновлены (${imageUrls.length} шт).`);
   } catch (err) {
-    bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+    bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
   }
 });
 
-// Изменить цену: /editprice ID Цена
-bot.onText(/\/editprice (\d+) (\d+)/, async (msg, match) => {
+// Удаление товара
+bot.onText(/\/deleteproduct(?:\s+(\d+))?/, async (msg, match) => {
   if (!isAdmin(msg.chat.id)) return;
-  const [_, productId, newPrice] = match;
-  try {
-    await pool.query('UPDATE products SET price = $1 WHERE id = $2', [Number(newPrice), productId]);
-    bot.sendMessage(msg.chat.id, `✅ Цена товара ID ${productId} изменена на ${newPrice} ₽.`);
-  } catch (err) {
-    bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
-  }
-});
 
-// Удалить товар: /deleteproduct ID
-bot.onText(/\/deleteproduct (\d+)/, async (msg, match) => {
-  if (!isAdmin(msg.chat.id)) return;
   const productId = match[1];
+  if (!productId) {
+    return bot.sendMessage(msg.chat.id, 
+      `🗑 **Удаление товара:**\n\nОтправьте команду с ID товара:\n\`/deleteproduct ID_Товара\`\n\n*Пример:*\n\`/deleteproduct 1\``, 
+      { parse_mode: 'Markdown' }
+    );
+  }
+
   try {
     await pool.query('DELETE FROM products WHERE id = $1', [productId]);
-    bot.sendMessage(msg.chat.id, `🗑 Товар ID ${productId} удален.`);
+    bot.sendMessage(msg.chat.id, `🗑 Товар ID ${productId} успешно удален.`);
   } catch (err) {
-    bot.sendMessage(msg.chat.id, `Ошибка: ${err.message}`);
+    bot.sendMessage(msg.chat.id, `❌ Ошибка: ${err.message}`);
   }
 });
 
-// API Endpoints
+// --- API ENDPOINTS ДЛЯ ПРИЛОЖЕНИЯ ---
+
 app.post('/api/user/init', async (req, res) => {
   const { telegramId, username, firstName } = req.body;
   try {
@@ -220,7 +277,7 @@ app.post('/api/orders', async (req, res) => {
       await pool.query('UPDATE users SET bonuses = bonuses - $1 WHERE telegram_id = $2', [bonusesUsed, userId]);
     }
 
-    const itemsText = items?.map(i => `- ${i.name} (${i.selectedSize || 'M'}) — ${i.price}₽`).join('\n') || 'Не указаны';
+    const itemsText = items?.map(i => `- ${i.name} (${i.selectedSize || 'M'}) — ${i.price} ₽`).join('\n') || 'Не указаны';
 
     const msg = `🛍 **НОВЫЙ ЗАКАЗ №${orderId}**\n\n` +
       `👤 **Покупатель:** ${fullName} (${telegramUsername || '@no_username'})\n` +
